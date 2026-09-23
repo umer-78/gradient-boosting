@@ -222,6 +222,17 @@
     .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
     .slider-row { display: flex; align-items: center; gap: 10px; }
     .slider-row input[type=range] { flex: 1; padding: 0; }
+    .imp-row {
+      display: grid; grid-template-columns: 110px 1fr 64px; gap: 10px; align-items: center;
+      padding: 7px 0; font-size: 14px; cursor: default;
+      animation: slideIn 0.35s var(--ease) both;
+    }
+    .imp-row:hover .imp-track { box-shadow: var(--shadow-glow); }
+    .imp-row .imp-name { font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+    .imp-track { height: 18px; background: var(--surface-3); border-radius: 6px; overflow: hidden; transition: box-shadow 0.2s var(--ease); }
+    .imp-track i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--accent), #8b5cf6); transition: width 0.7s var(--ease); }
+    .imp-row .imp-val { font-family: var(--mono); font-size: 12.5px; text-align: right; color: var(--text-secondary); }
+    .split-key { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; margin-top: 8px; color: var(--muted); }
     input[type="range"] {
       -webkit-appearance: none; appearance: none;
       width: 100%; height: 6px; padding: 0; border: none;
@@ -240,6 +251,7 @@
       background: var(--accent); border: 3px solid var(--bg-elevated);
       box-shadow: 0 2px 6px var(--accent-glow); cursor: grab;
     }
+    .linekey { display: inline-block; width: 18px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
     footer {
       margin-top: 40px; padding-top: 24px;
       border-top: 1px solid var(--border);
@@ -348,6 +360,35 @@
         </div>
       </div>
       <div class="stats" id="stats"></div>
+    </section>
+
+    <section class="card" aria-labelledby="over-h">
+      <h2 id="over-h"><span class="section-num">04</span> Overfitting: train vs validation loss</h2>
+      <p class="muted" style="margin-top:0">The data is split 70/30 before training. Trees fit only the training rows; the validation log loss is computed each round on held-out rows the booster never sees. Deep trees plus a high learning rate push the curves apart — that gap <em>is</em> overfitting.</p>
+      <canvas id="overfit" width="920" height="300" role="img" aria-label="Training and validation log loss over boosting rounds"></canvas>
+      <div class="split-key">
+        <span><span class="linekey" style="background:var(--accent)"></span> train log loss</span>
+        <span><span class="linekey" style="background:var(--bad)"></span> validation log loss</span>
+        <span id="overfitNote" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="imp2-h">
+      <h2 id="imp2-h"><span class="section-num">05</span> Feature importance (gain) — interactive</h2>
+      <p class="muted" style="margin-top:0">Total split gain accumulated from the trees actually grown above, normalised to sum to 1. Hover a bar for the exact share. Remember section 03: on noisy data gain can crown a noise column — this chart measures training gain only.</p>
+      <div id="impBars"></div>
+      <p class="muted" id="impReadout" style="margin-bottom:0;font-size:13px">Hover a row to inspect it.</p>
+    </section>
+
+    <section class="card" aria-labelledby="res-h">
+      <h2 id="res-h"><span class="section-num">06</span> Residual plot</h2>
+      <p class="muted" style="margin-top:0">Each point is a training row: horizontal axis is the model's predicted probability at the current round, vertical axis is the residual (label − prediction). A well-behaved fit scatters residuals around zero across the whole probability range; structure in the cloud means the model is missing something.</p>
+      <canvas id="resid" width="920" height="300" role="img" aria-label="Residuals versus predicted probability"></canvas>
+      <div class="split-key">
+        <span><span class="dot" style="background:#2563eb"></span> residual ≈ 0 band</span>
+        <span><span class="dot" style="background:#dc2626"></span> positive residual (under-predicted)</span>
+        <span><span class="dot" style="background:#8b5cf6"></span> negative residual (over-predicted)</span>
+      </div>
     </section>
 
     <section class="card" aria-labelledby="how-h">
@@ -519,16 +560,25 @@
       return s / y.length;
     }
 
-    function boost(data, opts) {
+    function boost(data, opts, valData) {
       const { X, y } = data;
       const { lr, maxDepth, rounds, seed = 0 } = opts;
       const params = { maxDepth, minLeaf: 10, regLambda: 1.0, minGain: 0, minChildWeight: 1e-3 };
       const { binned, edges } = binFeatures(X, 32);
       const base = loglossInitial(y);
       let raw = new Array(y.length).fill(base);
+      let rawVal = valData ? new Array(valData.y.length).fill(base) : null;
       const trees = [];
       const losses = [loglossValue(y, raw)];
-      const rng = mulberry32(seed);
+      const valLosses = valData ? [loglossValue(valData.y, rawVal)] : [];
+      const gainByFeature = new Array(X[0].length).fill(0);
+
+      function accumulateGains(node) {
+        if (!node || node.feature < 0) return;
+        gainByFeature[node.feature] += Math.max(node.gain, 0);
+        accumulateGains(node.left);
+        accumulateGains(node.right);
+      }
 
       for (let r = 0; r < rounds; r++) {
         const G = new Float64Array(y.length), H = new Float64Array(y.length);
@@ -539,21 +589,32 @@
         }
         const idx = Array.from({ length: y.length }, (_, i) => i);
         const tree = growTree(binned, edges, G, H, idx, 0, params);
+        accumulateGains(tree);
         for (let i = 0; i < y.length; i++) {
-          // predict with binned row for training speed: walk using codes via edge thresholds on raw
           const xrow = X[i];
           let n = tree;
           while (n.left) n = xrow[n.feature] <= n.threshold ? n.left : n.right;
           raw[i] += lr * n.value;
         }
+        if (rawVal) {
+          for (let i = 0; i < valData.y.length; i++) {
+            const xrow = valData.X[i];
+            let n = tree;
+            while (n.left) n = xrow[n.feature] <= n.threshold ? n.left : n.right;
+            rawVal[i] += lr * n.value;
+          }
+          valLosses.push(loglossValue(valData.y, rawVal));
+        }
         trees.push(tree);
         losses.push(loglossValue(y, raw));
       }
-      return { base, lr, trees, losses, predict(x) {
+      const gainTotal = gainByFeature.reduce((a, b) => a + b, 0) || 1;
+      const importance = gainByFeature.map((g) => g / gainTotal);
+      return { base, lr, trees, losses, valLosses, importance, predict(x) {
         let s = this.base;
         for (const t of this.trees) {
           let n = t;
-          while (n.left) n = x[n.feature] <= n.threshold ? n.left : n.right;
+          while (n.left) x[n.feature] <= n.threshold ? n = n.left : n = n.right;
           s += this.lr * n.value;
         }
         return sigmoid(s);
@@ -568,12 +629,22 @@
       return correct / data.y.length;
     }
 
+    function splitTrainVal(data, frac = 0.7, seed = 5) {
+      const n = data.X.length;
+      const order = Array.from({ length: n }, (_, i) => i);
+      const rng = mulberry32(seed);
+      for (let i = n - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+      const nTrain = Math.floor(n * frac);
+      const pick = (idxs) => ({ X: idxs.map((i) => data.X[i]), y: idxs.map((i) => data.y[i]) });
+      return { train: pick(order.slice(0, nTrain)), val: pick(order.slice(nTrain)) };
+    }
+
     // === UI ===
     const boundary = document.getElementById("boundary");
     const bctx = boundary.getContext("2d");
     const lossC = document.getElementById("loss");
     const lctx = lossC.getContext("2d");
-    let model = null, data = null, playing = false, timer = null;
+    let model = null, data = null, trainSplit = null, playing = false, timer = null;
 
     function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
@@ -588,8 +659,10 @@
     function train() {
       const kind = document.getElementById("dataset").value;
       data = makeData(kind, 300, 7);
+      const split = splitTrainVal(data, 0.7, 5);
+      trainSplit = split.train;
       const o = opts();
-      model = boost(data, o);
+      model = boost(split.train, o, split.val);
       const step = document.getElementById("step");
       step.max = o.rounds;
       if (Number(step.value) > o.rounds) step.value = o.rounds;
@@ -687,15 +760,127 @@
 
       // stats: accuracy with `shown` trees
       const sub = { base: model.base, lr: model.lr, trees: model.trees.slice(0, shown), predict(x) { return partialPredict(model, x, shown); } };
-      const acc = shown === 0 ? 0.5 : accuracy(sub, data);
+      const acc = shown === 0 ? 0.5 : accuracy(sub, trainSplit || data);
       const curLoss = model.losses[shown];
+      const curVal = model.valLosses && model.valLosses.length ? model.valLosses[shown] : NaN;
       document.getElementById("stats").innerHTML = `
         <div class="stat"><div class="k">round</div><div class="v">${shown}</div></div>
         <div class="stat"><div class="k">log loss</div><div class="v">${curLoss.toFixed(4)}</div></div>
+        <div class="stat"><div class="k">val log loss</div><div class="v ${Number.isFinite(curVal) && curVal > curLoss + 0.05 ? "bad" : ""}">${Number.isFinite(curVal) ? curVal.toFixed(4) : "—"}</div></div>
         <div class="stat"><div class="k">train accuracy</div><div class="v">${(acc * 100).toFixed(1)}%</div></div>
         <div class="stat"><div class="k">learning rate</div><div class="v">${Number(document.getElementById("lr").value).toFixed(2)}</div></div>
         <div class="stat"><div class="k">depth</div><div class="v">${document.getElementById("depth").value}</div></div>
       `;
+
+      drawOverfit(shown);
+      drawImportance();
+      drawResiduals(shown);
+    }
+
+    function drawOverfit(shown) {
+      const c = document.getElementById("overfit");
+      const g = c.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const w = c.clientWidth || 920, h = 300;
+      c.width = w * dpr; c.height = h * dpr; c.style.height = h + "px";
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      const train = model.losses.slice(0, shown + 1);
+      const val = (model.valLosses || []).slice(0, shown + 1);
+      const all = train.concat(val);
+      if (!all.length) return;
+      const minL = Math.min(...all), maxL = Math.max(...all);
+      const pad = { l: 48, r: 12, t: 14, b: 30 };
+      const x = (i) => pad.l + (i / Math.max(model.losses.length - 1, 1)) * (w - pad.l - pad.r);
+      const y = (v) => pad.t + (1 - (v - minL) / (maxL - minL || 1)) * (h - pad.t - pad.b);
+      const muted = css("--muted"), border = css("--border"), accent = css("--accent"), bad = css("--bad");
+      g.strokeStyle = border; g.fillStyle = muted; g.font = "11px ui-monospace, monospace";
+      for (let k = 0; k <= 4; k++) {
+        const v = minL + ((maxL - minL) * k) / 4;
+        const yy = y(v);
+        g.beginPath(); g.moveTo(pad.l, yy); g.lineTo(w - pad.r, yy); g.stroke();
+        g.textAlign = "right"; g.fillText(v.toFixed(3), pad.l - 6, yy + 3);
+      }
+      g.strokeStyle = accent; g.lineWidth = 2; g.beginPath();
+      train.forEach((v, i) => (i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v))));
+      g.stroke();
+      g.strokeStyle = bad; g.lineWidth = 2; g.beginPath();
+      val.forEach((v, i) => (i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v))));
+      g.stroke();
+      if (train.length) {
+        g.fillStyle = accent; g.beginPath(); g.arc(x(train.length - 1), y(train[train.length - 1]), 4, 0, Math.PI * 2); g.fill();
+      }
+      if (val.length) {
+        g.fillStyle = bad; g.beginPath(); g.arc(x(val.length - 1), y(val[val.length - 1]), 4, 0, Math.PI * 2); g.fill();
+      }
+      g.fillStyle = muted; g.textAlign = "left";
+      g.fillText("round 0", pad.l, h - 8);
+      g.textAlign = "right"; g.fillText("round " + model.trees.length, w - pad.r, h - 8);
+
+      const note = document.getElementById("overfitNote");
+      if (train.length && val.length) {
+        const gap = val[val.length - 1] - train[train.length - 1];
+        note.innerHTML = gap > 0.05
+          ? `<span style="color:var(--bad);font-weight:600">generalisation gap ${gap.toFixed(4)}</span> — validation is worse than training (overfitting).`
+          : `<span style="color:var(--good);font-weight:600">gap ${gap.toFixed(4)}</span> — validation still tracks training.`;
+      }
+    }
+
+    function drawImportance() {
+      const names = ["x1", "x2"];
+      const imp = model.importance || [];
+      const order = imp.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v);
+      const maxV = Math.max(...imp, 1e-9);
+      document.getElementById("impBars").innerHTML = order.map(({ v, i }, n) => `
+        <div class="imp-row" data-name="${names[i] || i}" data-v="${v}" style="animation-delay:${n * 0.05}s">
+          <span class="imp-name">${names[i] || "f" + i}</span>
+          <span class="imp-track"><i style="width:${(v / maxV) * 100}%"></i></span>
+          <span class="imp-val">${(v * 100).toFixed(1)}%</span>
+        </div>`).join("");
+      document.querySelectorAll(".imp-row").forEach((row) => {
+        row.addEventListener("mouseenter", () => {
+          document.getElementById("impReadout").textContent =
+            `${row.dataset.name}: ${(Number(row.dataset.v) * 100).toFixed(2)}% of total training gain across ${model.trees.length} trees.`;
+        });
+      });
+    }
+
+    function drawResiduals(shown) {
+      const c = document.getElementById("resid");
+      const g = c.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const w = c.clientWidth || 920, h = 300;
+      c.width = w * dpr; c.height = h * dpr; c.style.height = h + "px";
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      const pad = { l: 44, r: 12, t: 14, b: 30 };
+      const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+      const X = (p) => pad.l + p * iw;
+      const Y = (r) => pad.t + ((1 - r) / 2) * ih; // residual in [-1, 1]
+      const muted = css("--muted"), border = css("--border"), accent = css("--accent");
+      g.strokeStyle = border; g.fillStyle = muted; g.font = "11px ui-monospace, monospace";
+      for (let k = 0; k <= 4; k++) {
+        const r = 1 - (k / 4) * 2;
+        const yy = Y(r);
+        g.beginPath(); g.moveTo(pad.l, yy); g.lineTo(w - pad.r, yy); g.stroke();
+        g.textAlign = "right"; g.fillText(r.toFixed(2), pad.l - 6, yy + 3);
+      }
+      // zero band
+      g.fillStyle = "rgba(37,99,235,0.08)";
+      g.fillRect(pad.l, Y(0.1), iw, Y(-0.1) - Y(0.1));
+      g.strokeStyle = accent; g.setLineDash([4, 4]);
+      g.beginPath(); g.moveTo(pad.l, Y(0)); g.lineTo(w - pad.r, Y(0)); g.stroke();
+      g.setLineDash([]);
+      data.X.forEach((pt, i) => {
+        const p = shown === 0 ? 0.5 : partialPredict(model, pt, shown);
+        const r = data.y[i] - p;
+        g.beginPath(); g.arc(X(p), Y(Math.max(-1, Math.min(1, r))), 3, 0, Math.PI * 2);
+        g.fillStyle = r >= 0 ? "rgba(220,38,38,0.75)" : "rgba(139,92,246,0.75)";
+        g.fill();
+      });
+      g.fillStyle = muted; g.textAlign = "left";
+      g.fillText("predicted p = 0", pad.l, h - 8);
+      g.textAlign = "right"; g.fillText("p = 1", w - pad.r, h - 8);
     }
 
     function play() {
@@ -728,11 +913,14 @@
     ["dataset", "lr", "depth", "rounds"].forEach((id) =>
       document.getElementById(id).addEventListener("change", () => { stop(); document.getElementById("step").value = 0; train(); })
     );
+    let retrainDebounce = null;
     ["lr", "depth", "rounds"].forEach((id) =>
       document.getElementById(id).addEventListener("input", () => {
         document.getElementById("lrVal").textContent = Number(document.getElementById("lr").value).toFixed(2);
         document.getElementById("depthVal").textContent = document.getElementById("depth").value;
         document.getElementById("roundsVal").textContent = document.getElementById("rounds").value;
+        clearTimeout(retrainDebounce);
+        retrainDebounce = setTimeout(() => { stop(); document.getElementById("step").value = 0; train(); }, 90);
       })
     );
     window.addEventListener("resize", render);
