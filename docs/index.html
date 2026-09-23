@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gboost — Interactive Gradient Boosting Demo</title>
+  <meta name="description" content="Watch a histogram-binned gradient boosting model grow its decision boundary round by round on 2D data — Newton leaf values, shrinkage and all, in the browser.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='monospace'>Δ</text></svg>">
+  <style>
+    :root {
+      --bg: #f6f7f9; --surface: #ffffff; --surface-2: #eef0f4; --border: #dde1e8;
+      --text: #16181d; --muted: #5d6573; --accent: #2563eb; --accent-ink: #ffffff;
+      --good: #15803d; --bad: #b91c1c; --radius: 12px;
+      --shadow: 0 1px 2px rgb(16 24 40 / 0.06), 0 4px 16px rgb(16 24 40 / 0.05);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0e1116; --surface: #161a21; --surface-2: #1d222b; --border: #2a303b;
+        --text: #e8eaee; --muted: #9aa3b2; --accent: #60a5fa; --accent-ink: #0b1220;
+        --good: #4ade80; --bad: #f87171; --shadow: none; color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+    header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    header.top h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+    header.top p { margin: 2px 0 0; color: var(--muted); }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); min-width: 0; margin-bottom: 16px; }
+    .card h2 { font-size: 15px; margin: 0 0 12px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+    input, select, button { font: inherit; color: inherit; }
+    input, select { width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); outline: none; min-width: 0; }
+    input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button { cursor: pointer; border: 1px solid var(--border); background: var(--surface-2); padding: 9px 14px; border-radius: 9px; font-weight: 600; }
+    button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+    .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+    .row > * { flex: 1 1 150px; }
+    .row > button { flex: 0 0 auto; }
+    .muted { color: var(--muted); }
+    .mono { font-family: var(--mono); }
+    footer { margin-top: 32px; color: var(--muted); font-size: 13px; text-align: center; }
+    .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+    .stat { background: var(--surface-2); border-radius: 8px; padding: 8px 12px; min-width: 90px; flex: 1; }
+    .stat .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+    .viz { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 720px) { .viz { grid-template-columns: 1.2fr 1fr; } }
+    canvas { width: 100%; height: auto; display: block; border-radius: 8px; background: var(--surface-2); }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; margin-top: 8px; color: var(--muted); }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+    .slider-row { display: flex; align-items: center; gap: 10px; }
+    .slider-row input[type=range] { flex: 1; padding: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .table-wrap { overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div>
+        <h1>gboost</h1>
+        <p>Gradient boosting written from scratch — watch the decision boundary evolve over boosting rounds, right in your browser.</p>
+      </div>
+      <a href="https://github.com/umer-78/gradient-boosting">Source on GitHub</a>
+    </header>
+
+    <section class="card" aria-labelledby="ctrl-h">
+      <h2 id="ctrl-h">Boost a boundary</h2>
+      <p class="muted" style="margin-top:0">Two interleaved half-moons in 2D. Each round fits one shallow tree to the gradients of the log loss, takes a fraction of the step it suggests (the learning rate), and repeats. Newton leaf values, histogram-binned splits and L2 regularisation — the same arithmetic as the Python package.</p>
+      <div class="row" style="margin-bottom:10px">
+        <div>
+          <label for="dataset">Dataset</label>
+          <select id="dataset">
+            <option value="moons" selected>two moons</option>
+            <option value="xor">xor quadrants</option>
+            <option value="circle">inner circle</option>
+          </select>
+        </div>
+        <div>
+          <label for="lr">Learning rate <span class="mono" id="lrVal">0.30</span></label>
+          <input id="lr" type="range" min="0.05" max="0.8" step="0.05" value="0.3">
+        </div>
+        <div>
+          <label for="depth">Max depth <span class="mono" id="depthVal">3</span></label>
+          <input id="depth" type="range" min="1" max="5" step="1" value="3">
+        </div>
+        <div>
+          <label for="rounds">Rounds <span class="mono" id="roundsVal">60</span></label>
+          <input id="rounds" type="range" min="5" max="150" step="5" value="60">
+        </div>
+        <button class="primary" id="playBtn">Play</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+      <div class="slider-row" style="margin-bottom:12px">
+        <label for="step" style="margin:0;flex:0 0 auto">Round</label>
+        <input id="step" type="range" min="0" max="60" step="1" value="0">
+        <span class="mono" id="stepLabel">0 / 60</span>
+      </div>
+      <div class="viz">
+        <div>
+          <canvas id="boundary" width="520" height="400" role="img" aria-label="Decision boundary of the boosting model"></canvas>
+          <div class="legend">
+            <span><span class="dot" style="background:#2563eb"></span>class 0</span>
+            <span><span class="dot" style="background:#dc2626"></span>class 1</span>
+            <span class="muted">background shade = predicted probability</span>
+          </div>
+        </div>
+        <div>
+          <canvas id="loss" width="400" height="400" role="img" aria-label="Training loss over boosting rounds"></canvas>
+          <div class="legend"><span class="muted">training log loss per round (lower is better)</span></div>
+        </div>
+      </div>
+      <div class="stats" id="stats"></div>
+    </section>
+
+    <section class="card" aria-labelledby="how-h">
+      <h2 id="how-h">The loop</h2>
+      <p>Start from a constant. Ask the loss which way each prediction should move and how sharply. Fit one shallow tree to those gradients. Take a <em>fraction</em> of the step it suggests. Repeat.</p>
+      <p class="mono" style="background:var(--surface-2); padding:12px; border-radius:8px; overflow-x:auto">gain = G_left²/(H_left+λ) + G_right²/(H_right+λ) − G²/(H+λ)<br>leaf = −ΣG / (ΣH + λ)</p>
+      <p class="muted" style="margin-bottom:0">G and H are the summed gradients and hessians in a node. The leaf value is the minimiser of the second-order expansion — a Newton step — rather than the mean of the residuals. The learning rate is the whole trick: taking a tenth of each step and growing ten times as many trees reaches a better answer, because no single tree ever gets to be confident.</p>
+    </section>
+
+    <section class="card" aria-labelledby="imp-h">
+      <h2 id="imp-h">Gain importance is not importance</h2>
+      <p class="muted" style="margin-top:0">A column of pure noise with many distinct values gets more chances to produce a lucky split, and gain only counts how far the <em>training</em> loss fell when it did. On the package's churn data, gain ranks a noise column third of six — above <code class="mono">contract</code>. Permutation importance, measured on held-out data, gives it 0.000.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>feature</th><th>gain</th><th>permutation</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">tenure_months</td><td>0.359</td><td>0.540</td></tr>
+            <tr><td class="mono">monthly_charge</td><td>0.197</td><td>0.066</td></tr>
+            <tr><td class="mono">reference_id <span class="muted">(pure noise)</span></td><td style="color:var(--bad)">0.176</td><td style="color:var(--good)">0.000</td></tr>
+            <tr><td class="mono">contract</td><td>0.169</td><td>0.307</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>38 tests · Python 3.10–3.12 · NumPy the only dependency · Built by <a href="https://github.com/umer-78">Umer Hashmi</a></footer>
+  </div>
+
+  <script>
+    // === RNG / data ===
+    function mulberry32(a) {
+      return function () {
+        let t = (a += 0x6d2b79f5);
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function gauss(rng) {
+      let u = 0, v = 0;
+      while (u === 0) u = rng();
+      while (v === 0) v = rng();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    function makeData(kind, n = 300, seed = 7) {
+      const rng = mulberry32(seed);
+      const X = [], y = [];
+      for (let i = 0; i < n; i++) {
+        const label = i % 2;
+        let x1, x2;
+        if (kind === "moons") {
+          const t = Math.PI * (i / n);
+          if (label === 0) { x1 = Math.cos(t); x2 = Math.sin(t); }
+          else { x1 = 1 - Math.cos(t); x2 = 0.5 - Math.sin(t); }
+          x1 += gauss(rng) * 0.12; x2 += gauss(rng) * 0.12;
+        } else if (kind === "xor") {
+          const q = i % 4;
+          x1 = (q === 0 || q === 3) ? rng() * 1.6 - 0.8 : rng() * 1.6 - 0.8;
+          x2 = (q === 0 || q === 3) ? rng() * 1.6 - 0.8 : rng() * 1.6 - 0.8;
+          // true xor-ish labels from quadrants; rebuild labels below
+          x1 = rng() * 2 - 1; x2 = rng() * 2 - 1;
+        } else { // circle
+          const r = label === 0 ? rng() * 0.55 : 0.75 + rng() * 0.45;
+          const a = rng() * Math.PI * 2;
+          x1 = Math.cos(a) * r + gauss(rng) * 0.05;
+          x2 = Math.sin(a) * r + gauss(rng) * 0.05;
+        }
+        X.push([x1, x2]);
+        if (kind === "xor") y.push((x1 * x2 > 0) ? 1 : 0);
+        else y.push(label);
+      }
+      return { X, y };
+    }
+
+    // === Histogram-binned regression tree + boosting (ports gboost) ===
+    function quantileEdges(values, maxBins) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const edges = [];
+      for (let b = 1; b < maxBins; b++) {
+        const pos = (sorted.length - 1) * (b / maxBins);
+        const lo = Math.floor(pos), hi = Math.ceil(pos);
+        const v = sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+        if (!edges.length || v > edges[edges.length - 1]) edges.push(v);
+      }
+      return edges;
+    }
+    function searchsorted(edges, v) {
+      let lo = 0, hi = edges.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (edges[mid] < v) lo = mid + 1; else hi = mid; }
+      return lo;
+    }
+
+    function binFeatures(X, maxBins) {
+      const n = X.length, d = X[0].length;
+      const binned = Array.from({ length: n }, () => new Array(d));
+      const edges = [];
+      for (let f = 0; f < d; f++) {
+        const col = X.map((r) => r[f]);
+        const e = quantileEdges(col, maxBins);
+        edges.push(e);
+        for (let i = 0; i < n; i++) binned[i][f] = searchsorted(e, col[i]);
+      }
+      return { binned, edges };
+    }
+
+    function growTree(binned, edges, G, H, idx, depth, params) {
+      const gSum = idx.reduce((s, i) => s + G[i], 0);
+      const hSum = idx.reduce((s, i) => s + H[i], 0);
+      const node = { value: -gSum / (hSum + params.regLambda), feature: -1, threshold: 0, left: null, right: null, gain: 0 };
+      if (depth >= params.maxDepth || idx.length < 2 * params.minLeaf) return node;
+
+      const parent = (gSum * gSum) / (hSum + params.regLambda);
+      const d = binned[0].length;
+      let best = null;
+      const nBins = Math.max(...idx.flatMap((i) => binned[i])) + 1;
+
+      for (let f = 0; f < d; f++) {
+        const gHist = new Float64Array(nBins), hHist = new Float64Array(nBins), cHist = new Float64Array(nBins);
+        for (const i of idx) {
+          const b = binned[i][f];
+          gHist[b] += G[i]; hHist[b] += H[i]; cHist[b]++;
+        }
+        let cg = 0, ch = 0, cc = 0;
+        for (let b = 0; b < nBins - 1; b++) {
+          cg += gHist[b]; ch += hHist[b]; cc += cHist[b];
+          const nR = idx.length - cc;
+          if (cc < params.minLeaf || nR < params.minLeaf) continue;
+          if (ch < params.minChildWeight || (hSum - ch) < params.minChildWeight) continue;
+          const gL = cg, hL = ch, gR = gSum - cg, hR = hSum - ch;
+          const gain = (gL * gL) / (hL + params.regLambda) + (gR * gR) / (hR + params.regLambda) - parent;
+          if (!best || gain > best.gain) best = { feature: f, bin: b, gain };
+        }
+      }
+      if (!best || best.gain <= params.minGain) return node;
+
+      const thr = best.bin < edges[best.feature].length ? edges[best.feature][best.bin] : Infinity;
+      // split by bin using original binned codes: codes <= best.bin go left
+      // but our grow used binned codes; split indices by code
+      const leftIdx = [], rightIdx = [];
+      for (const i of idx) (binned[i][best.feature] <= best.bin ? leftIdx : rightIdx).push(i);
+      if (!leftIdx.length || !rightIdx.length) return node;
+
+      node.feature = best.feature; node.gain = best.gain; node.threshold = thr;
+      node.left = growTree(binned, edges, G, H, leftIdx, depth + 1, params);
+      node.right = growTree(binned, edges, G, H, rightIdx, depth + 1, params);
+      return node;
+    }
+
+    function treePredict(node, x) {
+      let n = node;
+      while (n.left) n = x[n.feature] <= n.threshold ? n.left : n.right;
+      // wait: we split on binned codes, threshold is edge value. Use raw x vs threshold.
+      // Actually split used codes <= bin. Equivalent: raw <= edges[bin]. thr set from edges. Good.
+      return n.value;
+    }
+
+    // Fix: predict must walk using raw feature vs threshold — done above.
+    // But growTree splits on codes; when predicting raw x we compare to edge. Correct for side="left" searchsorted.
+
+    function loglossInitial(y) {
+      const rate = Math.min(Math.max(y.reduce((a, b) => a + b, 0) / y.length, 1e-6), 1 - 1e-6);
+      return Math.log(rate / (1 - rate));
+    }
+    function sigmoid(z) { return 1 / (1 + Math.exp(-Math.max(-60, Math.min(60, z)))); }
+    function loglossValue(y, raw) {
+      let s = 0;
+      for (let i = 0; i < y.length; i++) s += Math.log1p(Math.exp(raw[i])) - y[i] * raw[i];
+      return s / y.length;
+    }
+
+    function boost(data, opts) {
+      const { X, y } = data;
+      const { lr, maxDepth, rounds, seed = 0 } = opts;
+      const params = { maxDepth, minLeaf: 10, regLambda: 1.0, minGain: 0, minChildWeight: 1e-3 };
+      const { binned, edges } = binFeatures(X, 32);
+      const base = loglossInitial(y);
+      let raw = new Array(y.length).fill(base);
+      const trees = [];
+      const losses = [loglossValue(y, raw)];
+      const rng = mulberry32(seed);
+
+      for (let r = 0; r < rounds; r++) {
+        const G = new Float64Array(y.length), H = new Float64Array(y.length);
+        for (let i = 0; i < y.length; i++) {
+          const p = sigmoid(raw[i]);
+          G[i] = p - y[i];
+          H[i] = Math.max(p * (1 - p), 1e-6);
+        }
+        const idx = Array.from({ length: y.length }, (_, i) => i);
+        const tree = growTree(binned, edges, G, H, idx, 0, params);
+        for (let i = 0; i < y.length; i++) {
+          // predict with binned row for training speed: walk using codes via edge thresholds on raw
+          const xrow = X[i];
+          let n = tree;
+          while (n.left) n = xrow[n.feature] <= n.threshold ? n.left : n.right;
+          raw[i] += lr * n.value;
+        }
+        trees.push(tree);
+        losses.push(loglossValue(y, raw));
+      }
+      return { base, lr, trees, losses, predict(x) {
+        let s = this.base;
+        for (const t of this.trees) {
+          let n = t;
+          while (n.left) n = x[n.feature] <= n.threshold ? n.left : n.right;
+          s += this.lr * n.value;
+        }
+        return sigmoid(s);
+      } };
+    }
+
+    function accuracy(model, data) {
+      let correct = 0;
+      for (let i = 0; i < data.y.length; i++) {
+        if ((model.predict(data.X[i]) >= 0.5 ? 1 : 0) === data.y[i]) correct++;
+      }
+      return correct / data.y.length;
+    }
+
+    // === UI ===
+    const boundary = document.getElementById("boundary");
+    const bctx = boundary.getContext("2d");
+    const lossC = document.getElementById("loss");
+    const lctx = lossC.getContext("2d");
+    let model = null, data = null, playing = false, timer = null;
+
+    function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+    function opts() {
+      return {
+        lr: Number(document.getElementById("lr").value),
+        maxDepth: Number(document.getElementById("depth").value),
+        rounds: Number(document.getElementById("rounds").value),
+      };
+    }
+
+    function train() {
+      const kind = document.getElementById("dataset").value;
+      data = makeData(kind, 300, 7);
+      const o = opts();
+      model = boost(data, o);
+      const step = document.getElementById("step");
+      step.max = o.rounds;
+      if (Number(step.value) > o.rounds) step.value = o.rounds;
+      render();
+    }
+
+    function partialPredict(m, x, nTrees) {
+      let s = m.base;
+      for (let i = 0; i < nTrees; i++) {
+        let n = m.trees[i];
+        while (n.left) x[n.feature] <= n.threshold ? (n = n.left) : (n = n.right);
+        s += m.lr * n.value;
+      }
+      return sigmoid(s);
+    }
+
+    function render() {
+      if (!model || !data) return;
+      const shown = Number(document.getElementById("step").value);
+      document.getElementById("stepLabel").textContent = `${shown} / ${model.trees.length}`;
+      document.getElementById("lrVal").textContent = Number(document.getElementById("lr").value).toFixed(2);
+      document.getElementById("depthVal").textContent = document.getElementById("depth").value;
+      document.getElementById("roundsVal").textContent = document.getElementById("rounds").value;
+
+      // boundary canvas
+      const dpr = window.devicePixelRatio || 1;
+      const w = boundary.clientWidth || 520, h = 400;
+      boundary.width = w * dpr; boundary.height = h * dpr; boundary.style.height = h + "px";
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bctx.clearRect(0, 0, w, h);
+
+      const xs = data.X.map((p) => p[0]), ys = data.X.map((p) => p[1]);
+      const minX = Math.min(...xs) - 0.3, maxX = Math.max(...xs) + 0.3;
+      const minY = Math.min(...ys) - 0.3, maxY = Math.max(...ys) + 0.3;
+      const pad = 10;
+      const toPx = (x, y) => [
+        pad + ((x - minX) / (maxX - minX)) * (w - 2 * pad),
+        pad + (1 - (y - minY) / (maxY - minY)) * (h - 2 * pad),
+      ];
+
+      // background probability grid
+      const res = 4;
+      for (let py = 0; py < h; py += res) {
+        for (let px = 0; px < w; px += res) {
+          const x = minX + ((px - pad) / (w - 2 * pad)) * (maxX - minX);
+          const y = minY + (1 - (py - pad) / (h - 2 * pad)) * (maxY - minY);
+          const p = shown === 0 ? 0.5 : partialPredict(model, [x, y], shown);
+          // blue (class0) -> red (class1)
+          const r = Math.round(37 + p * (220 - 37));
+          const g = Math.round(99 + (1 - Math.abs(p - 0.5) * 2) * 20 - p * 40);
+          const b = Math.round(235 - p * (235 - 40));
+          bctx.fillStyle = `rgba(${r},${Math.max(0, g)},${b},0.55)`;
+          bctx.fillRect(px, py, res, res);
+        }
+      }
+
+      // points
+      data.X.forEach((pt, i) => {
+        const [px, py] = toPx(pt[0], pt[1]);
+        bctx.beginPath();
+        bctx.arc(px, py, 3.2, 0, Math.PI * 2);
+        bctx.fillStyle = data.y[i] ? "#dc2626" : "#2563eb";
+        bctx.fill();
+        bctx.strokeStyle = css("--surface"); bctx.lineWidth = 1; bctx.stroke();
+      });
+
+      // loss chart
+      const lw = lossC.clientWidth || 400, lh = 400;
+      lossC.width = lw * dpr; lossC.height = lh * dpr; lossC.style.height = lh + "px";
+      lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      lctx.clearRect(0, 0, lw, lh);
+      const lp = { l: 44, r: 10, t: 14, b: 30 };
+      const shownLoss = model.losses.slice(0, shown + 1);
+      const maxL = Math.max(...model.losses), minL = Math.min(...model.losses);
+      const lx = (i) => lp.l + (i / Math.max(model.losses.length - 1, 1)) * (lw - lp.l - lp.r);
+      const ly = (v) => lp.t + (1 - (v - minL) / (maxL - minL || 1)) * (lh - lp.t - lp.b);
+      const muted = css("--muted"), border = css("--border"), accent = css("--accent");
+      lctx.strokeStyle = border; lctx.fillStyle = muted; lctx.font = "11px ui-monospace, monospace";
+      for (let g = 0; g <= 4; g++) {
+        const v = minL + ((maxL - minL) * g) / 4;
+        const yy = ly(v);
+        lctx.beginPath(); lctx.moveTo(lp.l, yy); lctx.lineTo(lw - lp.r, yy); lctx.stroke();
+        lctx.textAlign = "right"; lctx.fillText(v.toFixed(3), lp.l - 6, yy + 3);
+      }
+      lctx.strokeStyle = accent; lctx.lineWidth = 2; lctx.beginPath();
+      shownLoss.forEach((v, i) => (i ? lctx.lineTo(lx(i), ly(v)) : lctx.moveTo(lx(i), ly(v))));
+      lctx.stroke();
+      if (shownLoss.length) {
+        lctx.fillStyle = accent;
+        lctx.beginPath(); lctx.arc(lx(shownLoss.length - 1), ly(shownLoss[shownLoss.length - 1]), 4, 0, Math.PI * 2); lctx.fill();
+      }
+      lctx.fillStyle = muted; lctx.textAlign = "left";
+      lctx.fillText("round 0", lp.l, lh - 8);
+      lctx.textAlign = "right"; lctx.fillText("round " + model.trees.length, lw - lp.r, lh - 8);
+
+      // stats: accuracy with `shown` trees
+      const sub = { base: model.base, lr: model.lr, trees: model.trees.slice(0, shown), predict(x) { return partialPredict(model, x, shown); } };
+      const acc = shown === 0 ? 0.5 : accuracy(sub, data);
+      const curLoss = model.losses[shown];
+      document.getElementById("stats").innerHTML = `
+        <div class="stat"><div class="k">round</div><div class="v">${shown}</div></div>
+        <div class="stat"><div class="k">log loss</div><div class="v">${curLoss.toFixed(4)}</div></div>
+        <div class="stat"><div class="k">train accuracy</div><div class="v">${(acc * 100).toFixed(1)}%</div></div>
+        <div class="stat"><div class="k">learning rate</div><div class="v">${Number(document.getElementById("lr").value).toFixed(2)}</div></div>
+        <div class="stat"><div class="k">depth</div><div class="v">${document.getElementById("depth").value}</div></div>
+      `;
+    }
+
+    function play() {
+      if (playing) return;
+      playing = true;
+      document.getElementById("playBtn").textContent = "Pause";
+      const step = document.getElementById("step");
+      timer = setInterval(() => {
+        let v = Number(step.value) + 1;
+        if (v > Number(step.max)) { stop(); return; }
+        step.value = v;
+        render();
+      }, 60);
+    }
+    function stop() {
+      playing = false;
+      clearInterval(timer);
+      document.getElementById("playBtn").textContent = "Play";
+    }
+
+    document.getElementById("playBtn").addEventListener("click", () => {
+      if (playing) stop();
+      else {
+        if (Number(document.getElementById("step").value) >= Number(document.getElementById("step").max)) document.getElementById("step").value = 0;
+        play();
+      }
+    });
+    document.getElementById("resetBtn").addEventListener("click", () => { stop(); document.getElementById("step").value = 0; train(); });
+    document.getElementById("step").addEventListener("input", () => { stop(); render(); });
+    ["dataset", "lr", "depth", "rounds"].forEach((id) =>
+      document.getElementById(id).addEventListener("change", () => { stop(); document.getElementById("step").value = 0; train(); })
+    );
+    ["lr", "depth", "rounds"].forEach((id) =>
+      document.getElementById(id).addEventListener("input", () => {
+        document.getElementById("lrVal").textContent = Number(document.getElementById("lr").value).toFixed(2);
+        document.getElementById("depthVal").textContent = document.getElementById("depth").value;
+        document.getElementById("roundsVal").textContent = document.getElementById("rounds").value;
+      })
+    );
+    window.addEventListener("resize", render);
+
+    train();
+    setTimeout(play, 300);
+  </script>
+</body>
+</html>
