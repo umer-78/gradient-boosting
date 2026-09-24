@@ -1,5 +1,9 @@
 # gboost
 
+[![CI](https://github.com/umer-78/gradient-boosting/actions/workflows/ci.yml/badge.svg)](https://github.com/umer-78/gradient-boosting/actions/workflows/ci.yml)
+
+**Live demo:** https://umer-78.github.io/gradient-boosting/
+
 Gradient boosting written from scratch in Python: histogram-binned regression
 trees, Newton leaf values, shrinkage, subsampling, early stopping and two kinds
 of feature importance. NumPy holds the arrays; every gradient, split and leaf is
