@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gboost"
+name = "gradient-boosting"
 version = "1.0.0"
-description = "Gradient boosting written from scratch: histogram trees, Newton leaf values, early stopping and permutation importance."
+description = "Gradient boosting written from scratch: histogram-binned trees, Newton leaf values, early stopping, and permutation importance that exposes gain importance's bias."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Umer Hashmi" }]

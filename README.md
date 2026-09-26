@@ -1,4 +1,4 @@
-# gboost
+# gboost: gradient boosting from scratch
 
 [![CI](https://github.com/umer-78/gradient-boosting/actions/workflows/ci.yml/badge.svg)](https://github.com/umer-78/gradient-boosting/actions/workflows/ci.yml)
 
