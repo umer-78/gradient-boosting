@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/umer-78/gradient-boosting/actions/workflows/ci.yml/badge.svg)](https://github.com/umer-78/gradient-boosting/actions/workflows/ci.yml)
 
+[![Gradient Boosting: the live demo](.github/preview.jpg)](https://umer-78.github.io/gradient-boosting/)
+
 **Live demo:** https://umer-78.github.io/gradient-boosting/
 
 Gradient boosting written from scratch in Python: histogram-binned regression
